@@ -31,9 +31,9 @@ if "dynamic_entry" not in st.session_state:
 st.sidebar.header("Asset Selection")
 colA, colB = st.sidebar.columns(2)
 with colA:
-    x_ticker = st.text_input("Asset X \n(Independent)", value="ADI").upper()
+    x_ticker = st.text_input("Asset X  \n(Independent)", value="ADI").upper()
 with colB:
-    y_ticker = st.text_input("Asset Y \n(Dependent)", value="AMD").upper()
+    y_ticker = st.text_input("Asset Y  \n(Dependent)", value="AMD").upper()
 
 # Dynamic data ingestion
 with st.spinner(f"Fetching live market data for {x_ticker} and {y_ticker}..."):
