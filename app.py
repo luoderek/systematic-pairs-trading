@@ -10,13 +10,8 @@ from strategy_engine import generate_signals, calculate_equity, calculate_tearsh
 @st.cache_data(show_spinner=False)
 def fetch_and_prep_data(ticker_x, ticker_y, start_date="2016-01-01"):
     """Fetches live market data and converts it to log prices."""
-    # Download raw adjusted close prices
     raw_data = yf.download([ticker_x, ticker_y], start=start_date)['Close']
-
-    # Clean missing data
     clean_data = raw_data.dropna()
-
-    # Convert to natural logarithms for the structural OLS engine
     log_data = np.log(clean_data)
 
     return log_data
@@ -50,7 +45,7 @@ with st.spinner(f"Fetching live market data for {x_ticker} and {y_ticker}..."):
         st.stop()
 
 
-# Cointegration Gatekeeper
+# Cointegration gatekeeper
 st.sidebar.markdown("---")
 st.sidebar.header("Structural Viability (1-Year Lookback)")
 
@@ -77,15 +72,16 @@ st.sidebar.markdown("---")
 st.sidebar.header("The Strategy Factory")
 st.sidebar.markdown("Select an optimisation engine:")
 
-# Engine 1: Maximum Raw Expected Value (MPO)
-if st.sidebar.button("Run MPO (Maximise Profit)"):
+# Engine 1: Maximum Profit
+if st.sidebar.button("Run Max Profit"):
     with st.spinner("Optimising for Absolute Return..."):
         optimal_boundary = run_strategy_factory(
-            log_data, x_ticker, y_ticker, objective='mpo')
+            log_data, x_ticker, y_ticker, objective='max profit')
         st.session_state.dynamic_entry = optimal_boundary
-        st.sidebar.success(f"MPO Optimal Boundary: {optimal_boundary:.1f} SD")
+        st.sidebar.success(
+            f"Max Profit Optimal Boundary: {optimal_boundary:.1f} SD")
 
-# Engine 2: Institutional Constrained Risk
+# Engine 2: Maximum Sortino Ratio
 if st.sidebar.button("Run Max Sortino"):
     with st.spinner("Optimising for Downside Protection..."):
         optimal_boundary = run_strategy_factory(
@@ -152,10 +148,7 @@ with col2:
 st.markdown("---")
 st.subheader("Risk-Adjusted Performance Metrics")
 
-# Pass the raw daily returns directly from the backend
 tearsheet = calculate_tearsheet(daily_returns)
-
-# Create 6 columns for the KPI cards
 kpi1, kpi2, kpi3, kpi4, kpi5, kpi6 = st.columns(6)
 
 kpi1.metric(label="Total Return",

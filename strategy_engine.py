@@ -55,7 +55,7 @@ def generate_signals(log_data, x_ticker, y_ticker, beta_lookback=252, signal_loo
 
         # Long state
         elif current_position == 1:
-            # Take profit if Z rises above target, or stop out if it crashes further
+            # Take profit if Z rises above target, or stop if it crashes further
             if z >= -exit_thresh:
                 current_position = 0
             elif z <= -stop_loss:
@@ -63,7 +63,7 @@ def generate_signals(log_data, x_ticker, y_ticker, beta_lookback=252, signal_loo
 
         # Short state
         elif current_position == -1:
-            # Take profit if Z falls below target, or stop out if it squeezes higher
+            # Take profit if Z falls below target, or stop if it squeezes higher
             if z <= exit_thresh:
                 current_position = 0
             elif z >= stop_loss:
@@ -124,8 +124,7 @@ def calculate_tearsheet(strategy_returns):
         "Sharpe Ratio": sharpe_ratio,
         "Sortino Ratio": sortino_ratio,
         "Max Drawdown": max_drawdown,
-        "Win Rate": win_rate,
-        "total_trades": active_days
+        "Win Rate": win_rate
     }
 
 
@@ -150,7 +149,7 @@ def run_strategy_factory(log_data, x_ticker, y_ticker, objective='sortino'):
         if metrics['total_trades'] == 0:
             continue
 
-        if objective == 'mpo':
+        if objective == 'max profit':
             current_score = metrics['Total Return']
         elif objective == 'sortino':
             current_score = metrics['Sortino Ratio']
