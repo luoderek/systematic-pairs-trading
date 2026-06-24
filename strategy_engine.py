@@ -124,7 +124,8 @@ def calculate_tearsheet(strategy_returns):
         "Sharpe Ratio": sharpe_ratio,
         "Sortino Ratio": sortino_ratio,
         "Max Drawdown": max_drawdown,
-        "Win Rate": win_rate
+        "Win Rate": win_rate,
+        "total_trades": active_days
     }
 
 
