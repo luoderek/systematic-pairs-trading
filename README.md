@@ -1,6 +1,6 @@
 # Systematic Pairs Trading & Optimisation Engine
 
-[![Launch App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://YOUR-APP-URL.streamlit.app)
+[![Launch App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://luoderek-pairs-trading.streamlit.app)
 
 ## Overview
 This repository contains a path-dependent systematic trading engine and interactive dashboard designed to identify, hedge, and extract value from mean-reverting anomalies in non-stationary time series. By utilising the Engle-Granger two-step method, the pipeline isolates stationary residual spreads between asset pairs and executes dynamic, market-neutral hedging through rolling regression. 
