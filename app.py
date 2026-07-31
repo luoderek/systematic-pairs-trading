@@ -91,11 +91,17 @@ st.session_state.setdefault("sweep", None)
 st.sidebar.header("Asset Selection")
 col_a, col_b = st.sidebar.columns(2)
 with col_a:
-    x_ticker = st.text_input("Asset X (independent)",
-                             value="ADI").strip().upper()
+    x_ticker = st.text_input(
+        "Asset X",
+        value="ADI",
+        help="Independent asset"
+    ).strip().upper()
 with col_b:
-    y_ticker = st.text_input("Asset Y (dependent)",
-                             value="AMD").strip().upper()
+    y_ticker = st.text_input(
+        "Asset Y",
+        value="AMD",
+        help="Dependent asset"
+    ).strip().upper()
 
 date_col1, date_col2 = st.sidebar.columns(2)
 with date_col1:
