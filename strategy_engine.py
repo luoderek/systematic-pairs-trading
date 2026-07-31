@@ -8,16 +8,15 @@ TRADING_DAYS = 252
 EPS = 1e-12
 
 
-# ----------------------------------------------------------------------------
-# Structural tests
-# ----------------------------------------------------------------------------
+# ---- Structural Tests ----
 
 def test_cointegration(series_y, series_x):
     """
-    Engle-Granger two-step cointegration test on log prices.
+    Engle-Granger test on log prices. Returns the p-value.
 
-    Returns the p-value, or NaN if there is not enough clean overlapping data
-    for the test to be meaningful.
+    A small p-value means the spread is stationary, so it should pull back
+    towards its mean instead of wandering off. Returns NaN when there isn't
+    enough clean data for the test to mean anything.
     """
     frame = pd.concat([series_y, series_x], axis=1).dropna()
     if len(frame) < 30 or frame.iloc[:, 0].std() == 0 or frame.iloc[:, 1].std() == 0:
@@ -31,10 +30,15 @@ def test_cointegration(series_y, series_x):
 
 def half_life(spread):
     """
-    Ornstein-Uhlenbeck half-life of mean reversion, in trading days.
+    Roughly how many days the spread takes to close half the gap back to zero.
 
-    Regresses the daily change in the spread on its lagged level. A positive
-    kappa means no mean reversion.
+    Regress today's change on yesterday's level. The slope (kappa) comes out
+    negative when the spread is being pulled back. If it's positive there is
+    no mean reversion at all, so return inf instead of a made up number.
+
+    Useful for picking signal_lookback. A 30 day z-score window on a spread
+    with a 90 day half-life is going to be normalising against the wrong mean
+    most of the time.
     """
     s = pd.Series(spread).dropna()
     if len(s) < 30:
@@ -50,16 +54,17 @@ def half_life(spread):
     return float(-np.log(2) / kappa)
 
 
-# ----------------------------------------------------------------------------
-# Spread construction (threshold-independent)
-# ----------------------------------------------------------------------------
+# ---- Spread Construction ----
 
 def compute_spread(log_data, x_ticker, y_ticker, beta_lookback=252, signal_lookback=30):
     """
-    Rolling-OLS hedge ratio, dynamic spread, and normalised z-score.
+    Rolling hedge ratio, spread, and z-score.
 
-    Returns a DataFrame indexed like `log_data` with columns:
-        alpha, beta, spread, z
+    None of this depends on the entry threshold, so the factory can build it
+    once and reuse it for every threshold it tests instead of refitting the
+    regression 21 times.
+
+    Returns a DataFrame with alpha, beta, spread, z.
     """
     if x_ticker == y_ticker:
         raise ValueError("Asset X and Asset Y must be different tickers.")
@@ -76,6 +81,8 @@ def compute_spread(log_data, x_ticker, y_ticker, beta_lookback=252, signal_lookb
     y_log = frame[y_ticker]
     x_log = sm.add_constant(frame[x_ticker])
 
+    # TODO: regressing Y on X and X on Y gives two different betas, so neither
+    # is really the hedge ratio. Read up on Johansen / total least squares.
     fit = RollingOLS(y_log, x_log, window=beta_lookback).fit()
     alpha = fit.params["const"]
     beta = fit.params[x_ticker]
@@ -84,7 +91,8 @@ def compute_spread(log_data, x_ticker, y_ticker, beta_lookback=252, signal_lookb
     mean = spread.rolling(window=signal_lookback).mean()
     std = spread.rolling(window=signal_lookback).std()
 
-    # Guard against a degenerate flat window producing an infinite z-score.
+    # If the spread is flat across a whole window the std is 0 and the z-score
+    # blows up to inf. Blank it instead.
     std = std.where(std > EPS)
     z = (spread - mean) / std
 
@@ -94,23 +102,21 @@ def compute_spread(log_data, x_ticker, y_ticker, beta_lookback=252, signal_lookb
     )
 
 
-# ----------------------------------------------------------------------------
-# Path-dependent state machine
-# ----------------------------------------------------------------------------
+# ---- State Machine ----
 
 def run_state_machine(z, entry_thresh, exit_thresh=0.0, stop_loss=3.0, cooldown=0):
     """
-    Path-dependent position state machine over the z-score oscillator.
+    Turns the z-score into positions: -1 short spread, 0 flat, +1 long spread.
 
-    States are -1 (short spread), 0 (flat), +1 (long spread). Entry requires
-    the z-score to be beyond `entry_thresh` but not already past `stop_loss`,
-    so a spread that gaps straight through the stop is never entered.
+    To open, z has to be past entry_thresh but still inside stop_loss. If the
+    spread has already gapped past the stop we skip it. No point buying
+    into something that's clearly broken.
 
-    `cooldown` bars re-entry for N days after a stop-out, which stops the engine
-    repeatedly re-arming into a spread that is actively breaking down.
+    cooldown blocks new entries for N days after a stop, so it doesn't keep
+    jumping straight back into the same losing spread.
 
-    Returns (positions, exit_reasons); exit_reasons records 'target' or 'stop'
-    on the bar a position is closed.
+    Returns positions and exit_reasons, where exit_reasons is 'stop' or
+    'target' on the day the position closes.
     """
     if entry_thresh >= stop_loss:
         raise ValueError(
@@ -142,6 +148,8 @@ def run_state_machine(z, entry_thresh, exit_thresh=0.0, stop_loss=3.0, cooldown=
                     state = 1             # spread cheap -> long the spread
 
         elif state == 1:
+            # check the stop first, otherwise a day that blows through both
+            # gets logged as a winner
             if value <= -stop_loss:
                 state = 0
                 reasons[i] = "stop"
@@ -171,11 +179,7 @@ def run_state_machine(z, entry_thresh, exit_thresh=0.0, stop_loss=3.0, cooldown=
 def generate_signals(log_data, x_ticker, y_ticker, beta_lookback=252,
                      signal_lookback=30, entry_thresh=2.0, exit_thresh=0.0,
                      stop_loss=3.0, cooldown=0):
-    """
-    Convenience wrapper: build the spread and run the state machine in one call.
-
-    Returns (spread_frame, positions, exit_reasons).
-    """
+    """Spread and state machine in one call. Handy for quick tests."""
     spread_frame = compute_spread(
         log_data, x_ticker, y_ticker, beta_lookback, signal_lookback
     )
@@ -185,20 +189,25 @@ def generate_signals(log_data, x_ticker, y_ticker, beta_lookback=252,
     return spread_frame, positions, reasons
 
 
-# ----------------------------------------------------------------------------
-# Portfolio construction and P&L
-# ----------------------------------------------------------------------------
+# ---- Portfolio and P&L ----
 
 def calculate_equity(log_data, spread_frame, positions, x_ticker, y_ticker,
                      cost_bps=5.0, execution_lag=1):
     """
-    Convert signals into a capital-normalised, cost-aware net return stream.
+    Turn positions into a daily net return series.
 
-    `cost_bps` is charged per unit of notional traded, per leg, and covers
-    commission plus half the bid-ask spread.
+    One unit of position means 1 of Y against |beta| of X, so the money tied
+    up is (1 + |beta|), not 1. Dividing by that gives return on the capital
+    actually used. Skip it and the numbers look better than they are any time
+    beta is above 1.
 
-    Returns (equity_curve, net_returns, book) where `equity_curve` is cumulative
-    return in decimal and `book` carries the leg weights, turnover and costs.
+    execution_lag=1 means the signal from the close of day T is filled at that
+    same close and earns the move into T+1. Nothing looks forward, but it does
+    assume you can trade the closing print. Set it to 2 to wait a full day.
+
+    cost_bps is commission plus half the bid-ask, per leg.
+
+    Returns equity_curve, net_returns, and book (the daily weights and costs).
     """
     if execution_lag < 1:
         raise ValueError(
@@ -208,7 +217,8 @@ def calculate_equity(log_data, spread_frame, positions, x_ticker, y_ticker,
     y_log = log_data[y_ticker].reindex(index)
     x_log = log_data[x_ticker].reindex(index)
 
-    # Simple returns: legs cannot be aggregated additively in log space.
+    # Convert to simple returns first. Log returns can't be added across two
+    # legs, only across time.
     ret_y = np.exp(y_log.diff()) - 1.0
     ret_x = np.exp(x_log.diff()) - 1.0
 
@@ -221,15 +231,15 @@ def calculate_equity(log_data, spread_frame, positions, x_ticker, y_ticker,
 
     gross_return = weight_y * ret_y + weight_x * ret_x
 
-    # Turnover on both legs; captures rebalancing drag from a drifting beta,
-    # not just the round trips.
+    # Costs come off the change in both weights. Beta moves a bit every day,
+    # so there's a small charge even when the position is unchanged.
     turnover = (weight_y.diff().abs() + weight_x.diff().abs()).fillna(0.0)
     costs = turnover * (cost_bps / 10_000.0)
 
     net_returns = (gross_return - costs).fillna(0.0)
 
-    # Trim the warm-up. Leaving the forced zeros in deflates volatility and
-    # inflates the apparent length of the track record.
+    # Cut off the warm-up. Those days are forced flat while the rolling
+    # windows fill up, and leaving a year of zeros in pulls the vol down.
     first = spread_frame["z"].first_valid_index()
     if first is not None:
         start = index.get_loc(first)
@@ -254,14 +264,20 @@ def calculate_equity(log_data, spread_frame, positions, x_ticker, y_ticker,
     return equity_curve, net_returns, book
 
 
-# ----------------------------------------------------------------------------
-# Performance metrics
-# ----------------------------------------------------------------------------
+# ---- Performance Metrics ----
 
 def downside_deviation(returns, target=0.0, periods=TRADING_DAYS):
     """
-    Annualised downside deviation: root-mean-square shortfall below `target`,
-    averaged over all periods.
+    Downside deviation, annualised.
+
+    Root mean square of everything below target, divided by the total number
+    of days including the good ones.
+
+    Dividing by only the losing days is what broke my Sortino. That version
+    measures how spread out the losses are rather than how often they happen,
+    and it barely moves when you change the entry threshold, so Sortino ends
+    up as total return with a different scale and both optimisers pick the
+    same answer.
     """
     r = pd.Series(returns).dropna()
     if len(r) == 0:
@@ -282,10 +298,13 @@ def _empty_metrics(n=0):
 
 def calculate_tearsheet(net_returns, book=None, risk_free=0.0, periods=TRADING_DAYS):
     """
-    Risk-adjusted performance metrics from a stream of net simple returns.
+    Performance stats from a series of daily net returns.
 
-    `risk_free` is an annualised decimal rate and is subtracted before the
-    Sharpe and Sortino calculations, so both are excess-return ratios.
+    risk_free is annual and decimal, so 0.04 for 4%. It comes off before
+    Sharpe and Sortino so both are excess return ratios.
+
+    Pass `book` as well to get the trade-level numbers. Win rate without it is
+    per day, which is not the same thing and reads much higher.
     """
     r = pd.Series(net_returns).dropna()
 
@@ -301,6 +320,8 @@ def calculate_tearsheet(net_returns, book=None, risk_free=0.0, periods=TRADING_D
     daily_rf = risk_free / periods
     excess = r - daily_rf
 
+    # sample std (ddof=1). Barely changes anything at this sample size but
+    # it's the right one for an estimate.
     volatility = float(r.std(ddof=1) * np.sqrt(periods))
     sharpe = float(excess.mean() / (excess.std(ddof=1) + EPS)
                    * np.sqrt(periods))
@@ -346,9 +367,9 @@ def calculate_tearsheet(net_returns, book=None, risk_free=0.0, periods=TRADING_D
 
 def summarise_trades(book):
     """
-    Collapse the daily book into round-trip trades.
+    Group the daily book into round-trip trades.
 
-    A trade is a maximal run of constant non-zero executed position.
+    A trade is just a run of days sitting at the same non-zero position.
     """
     columns = ["entry", "exit", "direction", "days", "return", "cost"]
     if book is None or len(book) == 0:
@@ -370,6 +391,9 @@ def summarise_trades(book):
             i += 1
         end = i
 
+        # The unwind trades on the first flat day, so grab that day's cost as
+        # well. Without this the trades don't add back up to the equity curve
+        # and the win rate comes out too high.
         tail = end + 1 if (end + 1 < n and held[end + 1] == 0) else None
         block_net = net[start:end + 1]
         block_cost = cost[start:end + 1].sum()
@@ -391,9 +415,7 @@ def summarise_trades(book):
     return pd.DataFrame(records, columns=columns)
 
 
-# ----------------------------------------------------------------------------
-# Threshold optimisation
-# ----------------------------------------------------------------------------
+# ----Tthreshold Optimisation ----
 
 OBJECTIVES = {
     "max profit": "Total Return",
@@ -409,10 +431,14 @@ def run_strategy_factory(log_data, x_ticker, y_ticker, objective="sortino",
                          execution_lag=1, risk_free=0.0, split_frac=0.70,
                          grid=None, min_trades=5):
     """
-    Sweep entry thresholds and return the best in-sample boundary.
-    The sweep is scored on the first `split_frac` of the sample only.
+    Try every entry threshold on the grid and return whichever scores best.
 
-    Returns (best_threshold, sweep_frame, split_date).
+    Only the first split_frac of the data gets scored. The rest is held back
+    so the app can show a result the optimiser never looked at. Picking the
+    threshold on the full history and then reporting on that same history
+    would just be reporting the best fit.
+
+    Returns best_threshold, the sweep table, and the split date.
     """
     if objective not in OBJECTIVES:
         raise ValueError(
@@ -420,6 +446,7 @@ def run_strategy_factory(log_data, x_ticker, y_ticker, objective="sortino",
         )
     score_key = OBJECTIVES[objective]
 
+    # built once and reused, it doesn't depend on the threshold
     spread_frame = compute_spread(
         log_data, x_ticker, y_ticker, beta_lookback, signal_lookback
     )
@@ -432,6 +459,9 @@ def run_strategy_factory(log_data, x_ticker, y_ticker, objective="sortino",
     if grid is None:
         grid = np.round(np.arange(1.0, 3.05, 0.1), 1)
 
+    # TODO: 21 tries on the same data means the best in-sample score is partly
+    # luck. The held-out window helps but doesn't fix it. Look at deflated
+    # Sharpe for a proper correction.
     rows = []
     for threshold in grid:
         threshold = float(round(float(threshold), 1))
@@ -450,6 +480,7 @@ def run_strategy_factory(log_data, x_ticker, y_ticker, objective="sortino",
         in_book = book.loc[:split_date]
         metrics = calculate_tearsheet(in_sample, in_book, risk_free=risk_free)
 
+        # a threshold that only fires twice can post a great score by luck
         if metrics["Trades"] < min_trades:
             continue
 

@@ -9,14 +9,16 @@ import strategy_engine as se
 st.set_page_config(page_title="StatArb Execution Engine", layout="wide")
 
 
-# ----------------------------------------------------------------------------
-# Data
-# ----------------------------------------------------------------------------
+# ---- Data ----
 
 @st.cache_data(show_spinner=False, ttl=60 * 60)
 def fetch_log_prices(ticker_x, ticker_y, start_date, end_date):
     """
-    Fetch split- and dividend-adjusted closes and convert to log prices.
+    Pull adjusted closes and take logs.
+
+    auto_adjust is set here on purpose. yfinance has changed the default
+    between versions, and unadjusted prices break the cointegration test
+    because dividends leave steps in the series.
     """
     raw = yf.download(
         [ticker_x, ticker_y],
@@ -60,14 +62,12 @@ def cached_factory(log_data, x, y, objective, beta_lookback, signal_lookback,
     )
 
 
-# ----------------------------------------------------------------------------
-# Header
-# ----------------------------------------------------------------------------
+# ---- Header ----
 
 st.title("Systematic Pairs Trading Optimiser")
 st.caption(
     "Cointegration screening, dynamic hedging, and threshold optimisation with "
-    "out-of-sample validation. Built by Derek Luo."
+    "out-of-sample validation. Tool created by Derek Luo."
 )
 
 DEFAULTS = {
@@ -86,9 +86,7 @@ st.session_state.setdefault("last_optimisation", None)
 st.session_state.setdefault("sweep", None)
 
 
-# ----------------------------------------------------------------------------
-# Sidebar — assets
-# ----------------------------------------------------------------------------
+# ---- Sidebar: Assets ----
 
 st.sidebar.header("Asset Selection")
 col_a, col_b = st.sidebar.columns(2)
@@ -109,6 +107,7 @@ if not x_ticker or not y_ticker:
     st.info("Enter two ticker symbols to begin.")
     st.stop()
 
+# Same ticker twice gives beta = 1 and a spread of zero, so the z-score is 0/0
 if x_ticker == y_ticker:
     st.error("Asset X and Asset Y must be different tickers.")
     st.stop()
@@ -121,20 +120,18 @@ with st.spinner(f"Fetching {x_ticker} and {y_ticker}..."):
         st.stop()
 
 
-# ----------------------------------------------------------------------------
-# Sidebar — model windows and frictions
-# ----------------------------------------------------------------------------
+# ---- Sidebar: Windows and Costs ----
 
 st.sidebar.markdown("---")
 st.sidebar.header("Model Windows")
 beta_lookback = st.sidebar.number_input(
     "Hedge ratio window (days)", min_value=60, max_value=756, value=252, step=21,
-    help="Trailing window for the rolling OLS that sets the hedge ratio.",
+    help="How much history the rolling regression uses to set the hedge ratio.",
 )
 signal_lookback = st.sidebar.number_input(
     "Z-score window (days)", min_value=10, max_value=252, value=30, step=5,
-    help="Trailing window for normalising the spread. Should sit near the "
-         "spread's half-life.",
+    help="Days used for the mean and standard deviation of the spread. Works "
+         "best somewhere near the half-life shown below.",
 )
 
 try:
@@ -150,29 +147,27 @@ st.sidebar.header("Execution Frictions")
 st.sidebar.slider(
     "Round-trip cost per leg (bps)", min_value=0.0, max_value=50.0, step=0.5,
     key="cost_bps",
-    help="Commission plus half the bid-ask spread, charged on the traded "
-         "notional of both legs including hedge-ratio rebalancing.",
+    help="Commission plus half the bid-ask spread. Charged on both legs, "
+         "including the small daily rebalance as the hedge ratio drifts.",
 )
 st.sidebar.selectbox(
     "Execution lag", options=[1, 2], key="execution_lag",
     format_func=lambda v: "T+0 fill (signal close)" if v == 1 else "T+1 fill (next close)",
-    help="T+0 assumes you can trade the closing print that generated the "
-         "signal. T+1 adds a full day of implementation delay.",
+    help="T+0 assumes you can trade the same close that gave you the signal. "
+         "T+1 waits a full day before filling.",
 )
 st.sidebar.number_input(
     "Risk-free rate (annual, %)", min_value=0.0, max_value=10.0, step=0.25,
     key="risk_free",
-    help="Subtracted before Sharpe and Sortino, making both excess-return ratios.",
+    help="Taken off the returns before Sharpe and Sortino are calculated.",
 )
 st.sidebar.slider(
     "In-sample fraction (%)", min_value=40, max_value=90, step=5, key="split_frac",
-    help="The optimiser only sees this leading portion. The rest is held back.",
+    help="The optimiser only sees this much of the data. The rest is kept back.",
 )
 
 
-# ----------------------------------------------------------------------------
-# Sidebar — structural viability
-# ----------------------------------------------------------------------------
+# ---- Sidebar: Is the pair worth trading ----
 
 st.sidebar.markdown("---")
 st.sidebar.header("Structural Viability")
@@ -183,6 +178,8 @@ live_index = spread_frame.loc[first_valid:].index
 split_pos = min(max(int(len(live_index) * split_frac), 1), len(live_index) - 1)
 split_date = live_index[split_pos]
 
+# test the in-sample window separately from the last year. If the first one
+# passes and the second doesn't, the relationship has broken down since.
 formation_p = se.test_cointegration(
     log_data[y_ticker].loc[:split_date], log_data[x_ticker].loc[:split_date]
 )
@@ -216,14 +213,14 @@ if np.isfinite(hl) and not (0.5 * hl <= signal_lookback <= 4 * hl):
     )
 
 
-# ----------------------------------------------------------------------------
-# Sidebar — optimisation
-# ----------------------------------------------------------------------------
+# ---- Sidebar: Optimisation ----
 
 def optimise(objective):
     """
-    Button callback. Runs inside Streamlit's callback phase, which is the only
-    place a widget-backed session_state key can safely be reassigned.
+    Runs when one of the factory buttons is clicked.
+
+    This has to be a callback. Setting entry_thresh further down the script
+    throws an error once the slider that owns the key already exists.
     """
     stop = st.session_state.stop_loss
     best, sweep, _ = cached_factory(
@@ -268,9 +265,7 @@ if st.session_state.last_optimisation:
         )
 
 
-# ----------------------------------------------------------------------------
-# Sidebar — thresholds
-# ----------------------------------------------------------------------------
+# ---- Sidebar: Thresholds ----
 
 st.sidebar.markdown("---")
 st.sidebar.header("Execution Thresholds")
@@ -280,8 +275,9 @@ st.sidebar.slider(
     key="stop_loss",
 )
 
-# The entry boundary must sit strictly inside the stop, or no entry condition
-# can ever be satisfied.
+# entry has to sit inside the stop or the entry condition can never be true.
+# clamp it here, before the slider is built, because you can't change a
+# widget's value after it exists.
 entry_ceiling = round(st.session_state.stop_loss - 0.1, 1)
 st.session_state.entry_thresh = float(
     np.clip(st.session_state.entry_thresh, 1.0, entry_ceiling)
@@ -290,23 +286,22 @@ st.session_state.entry_thresh = float(
 st.sidebar.slider(
     "Entry boundary (Z)", min_value=1.0, max_value=entry_ceiling, step=0.1,
     key="entry_thresh",
-    help="Capped just below the stop loss, since an entry at or beyond the "
-         "stop can never trigger.",
+    help="Capped just under the stop. An entry at or past the stop can never "
+         "fire, and you'd get a flat equity curve with no warning.",
 )
 st.sidebar.slider(
     "Early harvest exit (Z)", min_value=-0.5, max_value=1.5, step=0.1,
     key="exit_thresh",
-    help="Positive values close the trade before the spread reaches its mean.",
+    help="Above zero closes the trade before the spread gets all the way back "
+         "to its mean.",
 )
 st.sidebar.number_input(
     "Cooldown after stop (days)", min_value=0, max_value=60, step=1, key="cooldown",
-    help="Blocks re-entry for N days after a stop-out.",
+    help="Waits this many days before allowing a new trade after a stop.",
 )
 
 
-# ----------------------------------------------------------------------------
-# Backtest
-# ----------------------------------------------------------------------------
+# ---- Run the Backtest ----
 
 with st.spinner("Running backtest..."):
     positions, exit_reasons = se.run_state_machine(
@@ -338,9 +333,7 @@ if full["Trades"] == 0:
     )
 
 
-# ----------------------------------------------------------------------------
-# Charts
-# ----------------------------------------------------------------------------
+# ---- Charts ----
 
 left, right = st.columns(2)
 
@@ -351,6 +344,7 @@ with left:
         x=equity_curve.index, y=equity_curve.values * 100,
         mode="lines", line=dict(color="#2ecc71", width=2), name="Strategy",
     ))
+    # shade the held-out part so it's obvious which half is the honest one
     fig.add_vrect(
         x0=split_date, x1=equity_curve.index[-1],
         fillcolor="#ffffff", opacity=0.06, line_width=0,
@@ -386,9 +380,7 @@ with right:
     st.plotly_chart(fig_z, width='stretch')
 
 
-# ----------------------------------------------------------------------------
-# Tearsheet
-# ----------------------------------------------------------------------------
+# ---- Metrics Table ----
 
 st.markdown("---")
 st.subheader("Risk-Adjusted Performance")
@@ -396,8 +388,8 @@ st.caption(
     f"In-sample through {split_date.date()} "
     f"({in_sample['Observations']} days), held out afterwards "
     f"({out_sample['Observations']} days). Returns are net of "
-    f"{st.session_state.cost_bps:.1f} bps per leg and normalised by gross "
-    f"exposure, so they represent unlevered return on deployed capital."
+    f"{st.session_state.cost_bps:.1f} bps per leg and divided by gross "
+    f"exposure, so they're returns on the capital actually used."
 )
 
 summary = pd.DataFrame(
@@ -423,14 +415,12 @@ if out_sample["Trades"] >= 5 and in_sample["Sharpe Ratio"] > 0:
     decay = 1 - out_sample["Sharpe Ratio"] / in_sample["Sharpe Ratio"]
     if decay > 0.5:
         st.warning(
-            f"Out-of-sample Sharpe is {decay:.0%} below in-sample. That degree "
-            f"of decay is the signature of an overfitted threshold."
+            f"Out-of-sample Sharpe is {decay:.0%} lower than in-sample. That "
+            f"much of a drop usually means the threshold is overfitted."
         )
 
 
-# ----------------------------------------------------------------------------
-# Detail
-# ----------------------------------------------------------------------------
+# ---- Detail Tabs ----
 
 tab_sweep, tab_trades, tab_hedge = st.tabs(
     ["Threshold sweep", "Trade log", "Hedge ratio"]
@@ -441,6 +431,8 @@ with tab_sweep:
     if sweep is None or sweep.empty:
         st.info("Run an optimiser to see how each objective scores the grid.")
     else:
+        # two y-axes because return and Sortino are on completely different
+        # scales. The point is where the peaks sit, not the levels.
         fig_s = go.Figure()
         for column, axis in [("Total Return", "y"), ("Sortino Ratio", "y2")]:
             fig_s.add_trace(go.Scatter(
@@ -487,6 +479,9 @@ with tab_hedge:
     )
     st.plotly_chart(fig_b, width='stretch')
     st.caption(
-        "A hedge ratio that wanders sharply is a warning that the "
-        "cointegrating relationship is unstable, regardless of the p-value."
+        "If beta jumps around a lot, the link between the two stocks isn't "
+        "stable and the p-value on its own is hiding that."
     )
+
+# TODO: no borrow cost on the short leg yet. Fine for large caps, would
+# matter a lot for anything hard to borrow.
