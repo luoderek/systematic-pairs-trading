@@ -93,13 +93,13 @@ col_a, col_b = st.sidebar.columns(2)
 with col_a:
     x_ticker = st.text_input(
         "Asset X",
-        value="ADI",
+        value="KO",
         help="Independent asset"
     ).strip().upper()
 with col_b:
     y_ticker = st.text_input(
         "Asset Y",
-        value="AMD",
+        value="PEP",
         help="Dependent asset"
     ).strip().upper()
 
@@ -452,8 +452,15 @@ with tab_sweep:
             margin=dict(l=0, r=0, t=30, b=0),
         )
         st.plotly_chart(fig_s, width='stretch')
-        st.dataframe(sweep, width='stretch', hide_index=True)
+        sweep_display = sweep.drop(columns=["score"]).rename(
+            columns={"entry_threshold": "Entry (SD)"}
+        )
+        for col in ["Total Return", "Max Drawdown"]:
+            sweep_display[col] = sweep_display[col].map("{:.2%}".format)
+        for col in ["Sortino Ratio", "Sharpe Ratio"]:
+            sweep_display[col] = sweep_display[col].map("{:.2f}".format)
 
+        st.dataframe(sweep_display, width='stretch', hide_index=True)
 with tab_trades:
     trades = se.summarise_trades(book)
     if trades.empty:
