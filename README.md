@@ -8,9 +8,9 @@ The maths sits in `strategy_engine.py`. The Streamlit app in `app.py` is a front
 
 ## The concept
 
-Pairs trading looks for two stocks tied to the same underlying economics, like AMD and Analog Devices, whose prices tend to move together. When one runs ahead of the other, you short the expensive one and buy the cheap one, betting the gap closes. If it does, you make money whether the market went up or down that month.
+Pairs trading looks for two stocks tied to the same underlying economics, like Coca-Cola and Pepsi, whose prices tend to move together. When one runs ahead of the other, you short the expensive one and buy the cheap one, betting the gap closes. If it does, you make money whether the market went up or down that month.
 
-The correlation between two stocks isn't enough. Two tech names will both rise in a bull market without the gap between them being predictable at all. What is instead needed is that the stocks are cointegrated. That is, the gap itself has to be stationary, so it has a mean it keeps reverting to.
+The correlation between two stocks isn't enough. Two companies will both rise in a bull market without the gap between them being predictable at all. What is instead needed is that the stocks are cointegrated. That is, the gap itself has to be stationary, so it has a mean it keeps reverting to.
 
 ## Building the spread
 
