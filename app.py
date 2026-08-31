@@ -257,6 +257,10 @@ st.sidebar.button(
     "Optimise: Max Sharpe", width='stretch',
     on_click=optimise, args=("sharpe",),
 )
+st.sidebar.button(
+    "Optimise: Max Calmar", width='stretch',
+    on_click=optimise, args=("calmar",),
+)
 
 if st.session_state.last_optimisation:
     objective, best, tested = st.session_state.last_optimisation
