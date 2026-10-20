@@ -23,7 +23,7 @@ def fetch_log_prices(ticker_x, ticker_y, start_date, end_date):
     raw = yf.download(
         [ticker_x, ticker_y],
         start=start_date,
-        end=end_date,
+        end=pd.Timestamp(end_date) + pd.Timedelta(days=1),
         auto_adjust=True,
         progress=False,
     )
@@ -39,6 +39,11 @@ def fetch_log_prices(ticker_x, ticker_y, start_date, end_date):
         raise ValueError(f"No price history found for: {', '.join(missing)}")
 
     clean = close[[ticker_x, ticker_y]].dropna()
+    if clean.empty:
+        raise ValueError(
+            f"No overlapping price history for {ticker_x} and {ticker_y} "
+            f"between {start_date} and {end_date}. Try widening the date range."
+        )
     if (clean <= 0).any().any():
         raise ValueError("Non-positive prices encountered; cannot take logs.")
 
@@ -107,7 +112,8 @@ date_col1, date_col2 = st.sidebar.columns(2)
 with date_col1:
     start_date = st.date_input("Start", value=pd.Timestamp("2016-01-01"))
 with date_col2:
-    end_date = st.date_input("End", value=pd.Timestamp.today())
+    end_date = st.date_input(
+        "End", value=pd.Timestamp.today() - pd.Timedelta(days=1))
 
 if not x_ticker or not y_ticker:
     st.info("Enter two ticker symbols to begin.")
